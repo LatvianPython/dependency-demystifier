@@ -47,8 +47,9 @@ class DependencyChecker:
                 issues_in_revision = self.get_issues(revision.msg)
                 if main_issue_number not in issues_in_revision:
                     for issue in issues_in_revision:
-                        if self.jira.issue(issue, fields='status').fields.status.name not in self.statuses_to_ignore:
-                            issues.add(issue)
+                        issue_status = self.jira.issue(issue, fields='status').fields.status.name
+                        if issue_status not in self.statuses_to_ignore:
+                            issues.add((issue, issue_status))
 
             yield (file, open_issues)
 
@@ -57,18 +58,17 @@ if __name__ == '__main__':
 
     dependency_checker = DependencyChecker()
 
-    for file_in_revision in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
-        print(f'File: {file_in_revision[0]}')
-        issues = file_in_revision[1]
+    for file_name, issues in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
+        print(f'File: {file_name}')
 
         issues_by_status = {status: [issue[0]
                                      for issue in issues
                                      if issue[1] == status]
-                            for status in set(issue[1] for issue in issues)
-                            }
+                            for status in set(issue[1] for issue in issues)}
+
         if len(issues_by_status) > 0:
-            for status, issues in issues_by_status.items():
-                print(f'Status: {status}\n       {issues}')
+            for status, issues_with_status in issues_by_status.items():
+                print(f'Status: {status}\n       {issues_with_status}')
         else:
             print(f'Should be OK')
         print()
