@@ -24,11 +24,13 @@ class DependencyChecker:
         log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
                                          limit=1, changelist=True)
 
+        #fixme: assumes 3 char file_extensions
         files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
 
         main_issue_number = self.get_issues(log_message=log_entry.msg).pop()
 
         for file in files:
+            #fixme: check if should use revision_to=revision_to_check, most likely: yes
             revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
 
             open_issues = set()
