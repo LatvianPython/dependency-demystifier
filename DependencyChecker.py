@@ -3,7 +3,11 @@ import re
 import configparser
 from getpass import getpass
 import keyring
+from pathlib import Path
 from jira import JIRA
+from collections import namedtuple
+
+Issue = namedtuple(typename='issue', field_names=['issue_key', 'status'])
 
 
 class DependencyChecker:
@@ -20,30 +24,32 @@ class DependencyChecker:
     def get_issues(self, log_message):
         return self.issue_regex.findall(log_message)
 
-    def check_dependencies(self, revision_to_check):
+    def get_dependencies(self, revision_to_check):
         log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
                                          limit=1, changelist=True)
 
-        #fixme: assumes 3 char file_extensions
-        files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
+        files = [file for _, file in log_entry.changelist if Path(file).suffix in self.file_extensions]
 
         main_issue_number = self.get_issues(log_message=log_entry.msg).pop()
 
         for file in files:
-            #fixme: check if should use revision_to=revision_to_check, most likely: yes
+            # fixme: check if should use revision_to=revision_to_check, most likely: yes
             revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
 
             open_issues = set()
-
             for revision in revisions:
                 issues_in_revision = self.get_issues(log_message=revision.msg)
                 if main_issue_number not in issues_in_revision:
                     for issue in issues_in_revision:
                         issue_status = self.jira.issue(id=issue, fields='status').fields.status.name
                         if issue_status not in self.statuses_to_ignore:
-                            open_issues.add((issue, issue_status))
+                            open_issues.add(Issue(issue, issue_status))
 
-            yield (file, open_issues)
+            yield (Path(file).name, open_issues)
+
+    def get_dependencies_as_dict(self, revision_to_check):
+        return {file_name: open_issues
+                for file_name, open_issues in self.get_dependencies(revision_to_check=revision_to_check)}
 
 
 def main():
@@ -69,13 +75,12 @@ def main():
                                            svn_working_copy_path=working_copy_path, extensions_to_check=file_extensions,
                                            statuses_to_ignore=statuses_to_ignore, issue_regex=issue_regex)
 
-    for file_name, issues in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
+    revision = int(input('Enter revision to check: '))
+    for file_name, issues in dependency_checker.get_dependencies_as_dict(revision_to_check=revision).items():
         print(f'File: {file_name}')
 
-        issues_by_status = {status: [issue[0]
-                                     for issue in issues
-                                     if issue[1] == status]
-                            for status in set(issue[1] for issue in issues)}
+        issues_by_status = {status: [issue.issue_key for issue in issues if issue.status == status]
+                            for status in set(issue.status for issue in issues)}
 
         if len(issues_by_status) > 0:
             for status, issues_with_status in issues_by_status.items():
