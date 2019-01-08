@@ -27,35 +27,29 @@ class DependencyChecker:
         self.statuses_to_ignore = config['JIRA']['statuses_to_ignore'].split(',')
         self.max_checked_revisions = int(config['SVN']['max_checked_revisions'])
 
-    def get_issue_number(self, log_message):
+    def get_issues(self, log_message):
         return re.findall(self.issue_regex, log_message)
 
-    def check_dependencies(self, revision):
-        log_entry = self.svn.log_default(revision_from=revision, revision_to=revision,
+    def check_dependencies(self, revision_to_check):
+        log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
                                          limit=1, changelist=True)
 
         files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
 
-        main_issue_number = self.get_issue_number(log_entry.msg).pop()
+        main_issue_number = self.get_issues(log_entry.msg).pop()
 
         for file in files:
-            issues_in_past_revisions = (item
-                                        for sublist in
-                                        (self.get_issue_number(entry[1].msg)
-                                         for entry in enumerate(self.svn.log_default(rel_filepath=file))
-                                         if entry[0] < self.max_checked_revisions and
-                                         main_issue_number not in self.get_issue_number(entry[1].msg)
-                                         )
-                                        for item in sublist)
+            revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
 
-            issues_in_past_revisions = set(issues_in_past_revisions)
+            open_issues = set()
 
-            open_issues = [issue for issue in
-                           [(issue, self.jira.issue(issue, fields='status').fields.status.name)
-                            for issue in issues_in_past_revisions
-                            ]
-                           if issue[1] not in self.statuses_to_ignore
-                           ]
+            for revision in revisions:
+                issues_in_revision = self.get_issues(revision.msg)
+                if main_issue_number not in issues_in_revision:
+                    for issue in issues_in_revision:
+                        if self.jira.issue(issue, fields='status').fields.status.name not in self.statuses_to_ignore:
+                            issues.add(issue)
+
             yield (file, open_issues)
 
 
