@@ -31,7 +31,14 @@ class DependencyChecker:
     def get_issue_number(self, log_message):
         return re.findall(self.issue_regex, log_message)
 
-    def func(self, log, main_issue_number):
+    def check_dependencies(self, revision):
+        log_entry = self.svn.log_default(revision_from=revision, revision_to=revision,
+                                         limit=1, changelist=True)
+
+        files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
+
+        main_issue_number = self.get_issue_number(log_entry.msg).pop()
+
         return ((file, [issue for issue in
                         [(issue, self.jira.issue(issue, fields='status').fields.status.name)
                          for issue in set(item
@@ -42,16 +49,8 @@ class DependencyChecker:
                                            main_issue_number not in self.get_issue_number(entry[1].msg))
                                           for item in sublist)]
                         if issue[1] not in self.statuses_to_ignore])
-                for _, file in log.changelist
-                if file[-3:] in self.file_extensions
+                for file in files
                 )
-
-    def check_dependencies(self, revision):
-        # ¯\_(ツ)_/¯
-        log_entry = self.svn.log_default(revision_from=revision, revision_to=revision,
-                                             limit=1, changelist=True)
-
-        return self.func(log_entry, self.get_issue_number(log_entry.msg).pop())
 
 
 if __name__ == '__main__':
