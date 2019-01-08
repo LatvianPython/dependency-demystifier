@@ -31,26 +31,27 @@ class DependencyChecker:
     def get_issue_number(self, log_message):
         return re.findall(self.issue_regex, log_message)
 
-    def check_dependencies(self, revisions):
-        # ¯\_(ツ)_/¯
-        return ((lambda log, main_issue_number:
-                 ((file, [issue for issue in
-                          [(issue, self.jira.issue(issue, fields='status').fields.status.name)
-                           for issue in set(item
-                                            for sublist in
-                                            (self.get_issue_number(entry[1].msg)
-                                             for entry in enumerate(self.svn.log_default(rel_filepath=file))
-                                             if entry[0] < self.max_checked_revisions and
-                                             main_issue_number not in self.get_issue_number(entry[1].msg))
-                                            for item in sublist)]
-                          if issue[1] not in self.statuses_to_ignore])
-                  for _, file in log.changelist
-                  if file[-3:] in self.file_extensions
-                  ))(log_entry, self.get_issue_number(log_entry.msg).pop())
-                for log_entry in (next(self.svn.log_default(revision_from=revision, revision_to=revision,
-                                                            limit=1, changelist=True))
-                                  for revision in (revisions if isinstance(revisions, Iterable) else [revisions]))
+    def func(self, log, main_issue_number):
+        return ((file, [issue for issue in
+                        [(issue, self.jira.issue(issue, fields='status').fields.status.name)
+                         for issue in set(item
+                                          for sublist in
+                                          (self.get_issue_number(entry[1].msg)
+                                           for entry in enumerate(self.svn.log_default(rel_filepath=file))
+                                           if entry[0] < self.max_checked_revisions and
+                                           main_issue_number not in self.get_issue_number(entry[1].msg))
+                                          for item in sublist)]
+                        if issue[1] not in self.statuses_to_ignore])
+                for _, file in log.changelist
+                if file[-3:] in self.file_extensions
                 )
+
+    def check_dependencies(self, revision):
+        # ¯\_(ツ)_/¯
+        log_entry = self.svn.log_default(revision_from=revision, revision_to=revision,
+                                             limit=1, changelist=True)
+
+        return self.func(log_entry, self.get_issue_number(log_entry.msg).pop())
 
 
 if __name__ == '__main__':
