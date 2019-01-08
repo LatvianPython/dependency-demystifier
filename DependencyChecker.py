@@ -1,5 +1,4 @@
 from svn import local
-from collections import Iterable
 import re
 import configparser
 from getpass import getpass
@@ -28,48 +27,48 @@ class DependencyChecker:
         self.statuses_to_ignore = config['JIRA']['statuses_to_ignore'].split(',')
         self.max_checked_revisions = int(config['SVN']['max_checked_revisions'])
 
-    def get_issue_number(self, log_message):
+    def get_issues(self, log_message):
         return re.findall(self.issue_regex, log_message)
 
-    def check_dependencies(self, revisions):
-        # ¯\_(ツ)_/¯
-        return ((lambda log, main_issue_number:
-                 ((file, [issue for issue in
-                          [(issue, self.jira.issue(issue, fields='status').fields.status.name)
-                           for issue in set(item
-                                            for sublist in
-                                            (self.get_issue_number(entry[1].msg)
-                                             for entry in enumerate(self.svn.log_default(rel_filepath=file))
-                                             if entry[0] < self.max_checked_revisions and
-                                             main_issue_number not in self.get_issue_number(entry[1].msg))
-                                            for item in sublist)]
-                          if issue[1] not in self.statuses_to_ignore])
-                  for _, file in log.changelist
-                  if file[-3:] in self.file_extensions
-                  ))(log_entry, self.get_issue_number(log_entry.msg).pop())
-                for log_entry in (next(self.svn.log_default(revision_from=revision, revision_to=revision,
-                                                            limit=1, changelist=True))
-                                  for revision in (revisions if isinstance(revisions, Iterable) else [revisions]))
-                )
+    def check_dependencies(self, revision_to_check):
+        log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
+                                         limit=1, changelist=True)
+
+        files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
+
+        main_issue_number = self.get_issues(log_entry.msg).pop()
+
+        for file in files:
+            revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
+
+            open_issues = set()
+
+            for revision in revisions:
+                issues_in_revision = self.get_issues(revision.msg)
+                if main_issue_number not in issues_in_revision:
+                    for issue in issues_in_revision:
+                        issue_status = self.jira.issue(issue, fields='status').fields.status.name
+                        if issue_status not in self.statuses_to_ignore:
+                            issues.add((issue, issue_status))
+
+            yield (file, open_issues)
 
 
 if __name__ == '__main__':
 
     dependency_checker = DependencyChecker()
 
-    for rev in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
-        for file_in_revision in rev:
-            print(f'File: {file_in_revision[0]}')
-            issues = file_in_revision[1]
+    for file_name, issues in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
+        print(f'File: {file_name}')
 
-            issues_by_status = {status: [issue[0]
-                                         for issue in issues
-                                         if issue[1] == status]
-                                for status in set(issue[1] for issue in issues)
-                                }
-            if len(issues_by_status) > 0:
-                for status, issues in issues_by_status.items():
-                    print(f'Status: {status}\n       {issues}')
-            else:
-                print(f'Should be OK')
-            print()
+        issues_by_status = {status: [issue[0]
+                                     for issue in issues
+                                     if issue[1] == status]
+                            for status in set(issue[1] for issue in issues)}
+
+        if len(issues_by_status) > 0:
+            for status, issues_with_status in issues_by_status.items():
+                print(f'Status: {status}\n       {issues_with_status}')
+        else:
+            print(f'Should be OK')
+        print()
