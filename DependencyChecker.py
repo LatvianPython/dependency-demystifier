@@ -7,56 +7,67 @@ from jira import JIRA
 
 
 class DependencyChecker:
-    def __init__(self):
-        config = configparser.ConfigParser()
-        config.read('DependencyChecker.conf')
-
-        password = keyring.get_password(config['JIRA']['keyring_service_name'], config['JIRA']['username'])
-
-        if password is None:
-            keyring.set_password(config['JIRA']['keyring_service_name'],
-                                 config['JIRA']['username'],
-                                 getpass('Input jira password for {}: '.format(config['JIRA']['username'])))
-
-            password = keyring.get_password(config['JIRA']['keyring_service_name'], config['JIRA']['username'])
-
-        self.jira = JIRA(server=config['JIRA']['server'], auth=(config['JIRA']['username'], password))
-        self.svn = local.LocalClient(config['SVN']['working_copy_path'])
-        self.issue_regex = config['SVN']['issuekey_regex']
-        self.file_extensions = config['SVN']['accepted_extensions'].split(',')
-        self.statuses_to_ignore = config['JIRA']['statuses_to_ignore'].split(',')
-        self.max_checked_revisions = int(config['SVN']['max_checked_revisions'])
+    def __init__(self, jira, svn_working_copy_path, extensions_to_check, statuses_to_ignore, issue_regex,
+                 max_revisions=20):
+        server, username, password = jira
+        self.jira = JIRA(server=server, auth=(username, password))
+        self.file_extensions = extensions_to_check
+        self.statuses_to_ignore = statuses_to_ignore
+        self.max_checked_revisions = max_revisions
+        self.issue_regex = re.compile(issue_regex)
+        self.svn = local.LocalClient(svn_working_copy_path)
 
     def get_issues(self, log_message):
-        return re.findall(self.issue_regex, log_message)
+        return self.issue_regex.findall(log_message)
 
     def check_dependencies(self, revision_to_check):
         log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
                                          limit=1, changelist=True)
 
+        #fixme: assumes 3 char file_extensions
         files = [file for _, file in log_entry.changelist if file[-3:] in self.file_extensions]
 
-        main_issue_number = self.get_issues(log_entry.msg).pop()
+        main_issue_number = self.get_issues(log_message=log_entry.msg).pop()
 
         for file in files:
+            #fixme: check if should use revision_to=revision_to_check, most likely: yes
             revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
 
             open_issues = set()
 
             for revision in revisions:
-                issues_in_revision = self.get_issues(revision.msg)
+                issues_in_revision = self.get_issues(log_message=revision.msg)
                 if main_issue_number not in issues_in_revision:
                     for issue in issues_in_revision:
-                        issue_status = self.jira.issue(issue, fields='status').fields.status.name
+                        issue_status = self.jira.issue(id=issue, fields='status').fields.status.name
                         if issue_status not in self.statuses_to_ignore:
-                            issues.add((issue, issue_status))
+                            open_issues.add((issue, issue_status))
 
             yield (file, open_issues)
 
 
-if __name__ == '__main__':
+def main():
+    config = configparser.ConfigParser()
+    config.read('DependencyChecker.conf')
 
-    dependency_checker = DependencyChecker()
+    statuses_to_ignore = config['JIRA']['statuses_to_ignore'].split(',')
+    service_name = config['JIRA']['keyring_service_name']
+    server = config['JIRA']['server']
+    username = config['JIRA']['username']
+    password = keyring.get_password(service_name=service_name, username=username)
+
+    if password is None:
+        keyring.set_password(service_name=service_name, username=username,
+                             password=getpass('Input jira password for {}: '.format(username)))
+        password = keyring.get_password(service_name=service_name, username=username)
+
+    issue_regex = config['SVN']['issuekey_regex']
+    file_extensions = config['SVN']['accepted_extensions'].split(',')
+    working_copy_path = config['SVN']['working_copy_path']
+
+    dependency_checker = DependencyChecker(jira=(server, username, password),
+                                           svn_working_copy_path=working_copy_path, extensions_to_check=file_extensions,
+                                           statuses_to_ignore=statuses_to_ignore, issue_regex=issue_regex)
 
     for file_name, issues in dependency_checker.check_dependencies(int(input('Enter revision to check: '))):
         print(f'File: {file_name}')
@@ -72,3 +83,7 @@ if __name__ == '__main__':
         else:
             print(f'Should be OK')
         print()
+
+
+if __name__ == '__main__':
+    main()
