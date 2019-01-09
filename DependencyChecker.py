@@ -31,7 +31,10 @@ class DependencyChecker:
 
         files = [file for _, file in log_entry.changelist if Path(file).suffix in self.file_extensions]
 
-        main_issue_key = self.get_issue_keys(log_message=log_entry.msg).pop()
+        try:  # fixme: provide actual solution to this
+            main_issue_key = self.get_issue_keys(log_message=log_entry.msg).pop()
+        except IndexError:
+            main_issue_key = None
 
         dependencies = []
         for file in files:
