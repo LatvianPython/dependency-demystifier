@@ -26,8 +26,8 @@ class DependencyChecker:
         return self.issue_regex.findall(log_message)
 
     def get_dependencies(self, revision_to_check):
-        log_entry = self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
-                                         limit=1, changelist=True)
+        log_entry = next(self.svn.log_default(revision_from=revision_to_check, revision_to=revision_to_check,
+                                              limit=1, changelist=True))
 
         files = [file for _, file in log_entry.changelist if Path(file).suffix in self.file_extensions]
 
@@ -81,7 +81,7 @@ def format_as_slack_attachment(dependencies, jira_server):
         'fields': fields,
         'ts': time.time()
     }
-    return attachment
+    return [attachment]
 
 
 def main():
