@@ -3,16 +3,18 @@ import svn.exception
 import configparser
 import keyring
 import logging
+from logging.config import fileConfig
 from contextlib import suppress
 from getpass import getpass
 from slackclient import SlackClient
 from DependencyChecker import DependencyChecker
 from DependencyChecker import format_as_slack_attachment
 
+fileConfig('logger.ini')
+logger = logging.getLogger(__name__)
+
 
 def main():
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(asctime)-15s %(funcName)s: %(message)s')
-
     config = configparser.ConfigParser()
     config.read('DependencyChecker.conf')
 
@@ -44,28 +46,43 @@ def main():
                 if event['type'] == 'message':
                     with suppress(KeyError):
                         if 'bot_id' not in event:
-                            with suppress(Exception):
-                                logging.info('{} {}'.format(event['user'], event['text']))
+                            logger.info('got request from:"{}" for "{}"'.format(event['user'], event['text']))
+                            logger.debug(event)
                             try:
-                                dependencies = dependency_checker.get_dependencies_as_dict(int(event['text']))
+                                revision = int(event['text'])
+                                dependencies = dependency_checker.get_dependencies_as_dict(revision)
                                 dependency_summary = format_as_slack_attachment(dependencies, server)
+                                logger.debug(dependency_summary)
                                 slack.api_call("chat.postMessage",
                                                channel=event['channel'],
                                                attachments=dependency_summary)
+                                logger.info('success!')
                             except ValueError:
+                                logger.warning('ValueError by {}'.format(event['user']))
                                 slack.api_call("chat.postMessage",
                                                channel=event['channel'],
                                                text='Enter just a plain revision number! :x:')
-                            except svn.exception.SvnException:
-                                slack.api_call("chat.postMessage",
-                                               channel=event['channel'],
-                                               text='No such revision! :x:')
+                            except svn.exception.SvnException as e:
+                                if 'No such revision' in e.args:
+                                    logger.warning('svn.exception.SvnException: No such revision ({})'.format(event))
+                                    slack.api_call("chat.postMessage",
+                                                   channel=event['channel'],
+                                                   text='No such revision! :x:')
+                                else:
+                                    logger.error('Unknown SvnException', exc_info=1)
+                                    raise
 
             # slack does not allow more than 1 message post per sec
             time.sleep(1)
     else:
-        print("Connection Failed")
+        logger.critical('Connection Failed')
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (SystemExit, KeyboardInterrupt):
+        pass
+    except:
+        logger.critical('', exc_info=1)
+        raise
