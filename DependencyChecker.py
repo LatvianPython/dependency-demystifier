@@ -2,6 +2,7 @@ from svn import local
 from pathlib import Path
 from jira import JIRA
 from collections import namedtuple
+from collections import defaultdict
 from datetime import datetime
 import logging
 
@@ -29,20 +30,25 @@ class DependencyChecker:
         """
         return set(self.issue_regex.findall(log_message))
 
+    def extract_files(self, revision):
+        return {(file, revision.revision)
+                for _, file in revision.changelist
+                if Path(file).suffix in self.file_extensions}
+
     def get_modified_files_for_revision(self, revision):
         """Returns the modified files with the desired extensions for a specific SVN revision along with an associated
             issue key for the revision
 
         :param revision: revision number that will be checked
         :return: a tuple consisting of an issue key found within the log_message and the list of files that were changed
-            in the specified revision (only returns those that we care about)
+            in the specified revision (only returns those that we care about based on extension)
         """
         log_entry = next(self.svn.log_default(revision_from=revision, revision_to=revision,
                                               limit=1, changelist=True))
 
         logger.debug('log_entry = '.format(log_entry))
 
-        files = [file for _, file in log_entry.changelist if Path(file).suffix in self.file_extensions]
+        files = self.extract_files(log_entry)
 
         try:
             issue_key = self.get_issue_keys(log_message=log_entry.msg).pop()
@@ -67,16 +73,15 @@ class DependencyChecker:
         revisions = self.svn.log_default(timestamp_from_dt=search_start_date, changelist=True, search=issue_key,
                                          rel_filepath=self.dev_branch)
 
-        # fixme: should associate a revision with each file, otherwise would search for non-relevant dependencies
-        files = set()
+        # there must be a better way!
+        files = defaultdict(int)
         max_revision = 0
-        for log_entry in revisions:
-            max_revision = max(max_revision, log_entry.revision)
-            files = files.union({file
-                                 for _, file in log_entry.changelist
-                                 if Path(file).suffix in self.file_extensions})
+        for revision in revisions:
+            max_revision = max(max_revision, revision.revision)
+            for file, revision_number in self.extract_files(revision):
+                files[file] = max(revision_number, files[file])
 
-        return max_revision, files
+        return max_revision, [(file, revision) for file, revision in files.items()]
 
     def get_dependencies(self, revision_to_check=None, issue_key=None):
         """Get dependencies for files within either a revision or for a whole issue
@@ -102,13 +107,13 @@ class DependencyChecker:
         logger.debug('issue_key = {}'.format(issue_key))
 
         dependencies = []
-        for file in files:
+        for file, revision_number in files:
             revisions = self.svn.log_default(rel_filepath=file)
 
             open_issues = set()
             for i, revision in enumerate(revisions):
 
-                if revision.revision > revision_to_check:
+                if revision.revision > revision_number:
                     continue
                 if i > self.max_checked_revisions:
                     break
