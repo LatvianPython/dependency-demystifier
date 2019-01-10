@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 
 Issue = namedtuple(typename='issue', field_names=['issue_key', 'status'])
+File = namedtuple(typename='files', field_names=['file_name', 'open_issues'])
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -43,9 +44,10 @@ class DependencyChecker:
 
         files = [file for _, file in log_entry.changelist if Path(file).suffix in self.file_extensions]
 
-        try:  # fixme: provide actual solution to this
+        try:
             issue_key = self.get_issue_keys(log_message=log_entry.msg).pop()
-        except IndexError:
+        except KeyError:
+            logger.warning('KeyError for get_issue_keys')
             issue_key = None
         return issue_key, files
 
@@ -76,27 +78,27 @@ class DependencyChecker:
 
         return max_revision, files
 
-    def get_dependencies(self, revision=None, issue_key=None):
+    def get_dependencies(self, revision_to_check=None, issue_key=None):
         """Get dependencies for files within either a revision or for a whole issue
 
         If we pass both parameters we default to using issue_key, searching by both is not supported
 
-        :param revision: used to check for dependencies in a specific revision
+        :param revision_to_check: used to check for dependencies in a specific revision
         :param issue_key: used to check for dependencies for a specific Jira issue
         :return: returns a dict where we give a summary for each file found and corresponding open issues associated
             with them
         """
-        if revision is None:
+        if revision_to_check is None:
             if issue_key is None:
                 logger.error('revision_to_check and issue_key both are None!')
                 raise ValueError('must provide at least one argument with some value')
             else:
-                revision, files = self.get_modified_files_for_issue(issue_key=issue_key)
+                revision_to_check, files = self.get_modified_files_for_issue(issue_key=issue_key)
         else:
-            issue_key, files = self.get_modified_files_for_revision(revision=revision)
+            issue_key, files = self.get_modified_files_for_revision(revision=revision_to_check)
 
         logger.debug('files_found: ({}); {}'.format(len(files), files))
-        logger.debug('revision_to_check: {}'.format(revision))
+        logger.debug('revision_to_check: {}'.format(revision_to_check))
         logger.debug('issue_key = {}'.format(issue_key))
 
         dependencies = []
@@ -106,7 +108,7 @@ class DependencyChecker:
             open_issues = set()
             for i, revision in enumerate(revisions):
 
-                if revision.revision > revision:
+                if revision.revision > revision_to_check:
                     continue
                 if i > self.max_checked_revisions:
                     break
@@ -126,9 +128,9 @@ class DependencyChecker:
                             open_issues.add(open_issue)
             dependencies.append((Path(file).name, open_issues))
         return {'issue_key': issue_key,
-                'revision': revision,
-                'files': {file_name: open_issues
-                          for file_name, open_issues in dependencies}}
+                'revision': revision_to_check,
+                'files': [File(file_name, open_issues)
+                          for file_name, open_issues in dependencies]}
 
 
 def format_as_slack_attachment(dependencies, jira_server):
@@ -137,14 +139,20 @@ def format_as_slack_attachment(dependencies, jira_server):
     summary = dependencies.copy()
     summary['files'] = {file_name: {status: [issue.issue_key for issue in issues if issue.status == status]
                                     for status in set(issue.status for issue in issues)}
-                        for file_name, issues in summary['files'].items()}
+                        for file_name, issues in sorted(summary['files'], key=lambda file: len(file.open_issues))}
 
-    # todo: handle cases when no files exist, so we return a non-ambiguous message, otherwise it will just be empty
-    fields = [{'title': '{} {}'.format(file, ':heavy_check_mark:' if len(issues) == 0 else ':warning:'),
-               'value': '\n'.join('{}:\n•{}'.format(status, '\n•'.join(issues))
-                                  for status, issues in issues.items()),
-               'short': False}
-              for file, issues in summary['files'].items()]
+    logger.debug('files in dependency list = {}'.format(len(summary['files'])))
+
+    if len(summary['files']) > 0:
+        fields = [{'title': '{} {}'.format(file, ':heavy_check_mark:' if len(issues) == 0 else ':warning:'),
+                   'value': '\n'.join('{}:\n•{}'.format(status, '\n•'.join(issues))
+                                      for status, issues in issues.items()),
+                   'short': False}
+                  for file, issues in summary['files'].items()]
+    else:
+        fields = [{'title': 'No binary files found. :thinking_face:',
+                   'value': ':heavy_check_mark:' * 3,
+                   'short': False}]
 
     had_any_dependencies = any(len(issues) > 0 for _, issues in summary['files'].items())
 
@@ -155,10 +163,9 @@ def format_as_slack_attachment(dependencies, jira_server):
         'color': 'warning' if had_any_dependencies else 'good',
         'title': summary['issue_key'],
         'title_link': '{}/browse/{}'.format(jira_server, summary['issue_key']),
-        'text': 'Summary for revision: {}'.format(summary['revision']),
         'fields': fields
     }
-    # fixme: ugly?
-    if summary['revision'] is None:
-        del attachment['text']
+    if summary['revision'] is not None:
+        attachment['text'] = 'Summary for revision: {}'.format(summary['revision'])
+
     return [attachment]

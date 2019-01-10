@@ -5,7 +5,7 @@ import keyring
 import logging
 import re
 from logging.config import fileConfig
-from contextlib import suppress
+from jira.exceptions import JIRAError
 from getpass import getpass
 from slackclient import SlackClient
 from DependencyChecker import DependencyChecker
@@ -63,48 +63,72 @@ class SlackApp:
         if 'bot_id' in event:
             return
 
-        with suppress(KeyError):
-            logger.info('got request from:"{}" for "{}"'.format(event['user'], event['text']))
-            logger.debug(event)
-            try:
-                issues = self.issue_regex.findall(event['text'])
-                if len(issues) >= 5:
-                    logger.warning('USER:"{}" tried to get summary for {} issued'.format(event['user'],
-                                                                                         len(issues)))
-                    self.slack.api_call('chat.postMessage',
-                                        channel=event['channel'],
-                                        text='Too many issues in one call! Do less than 5 :x:')
-                    return
-                elif len(issues) > 0:
-                    dependency_summary = []
-                    for issue in issues:
-                        dependencies = self.dependency_checker.get_dependencies(issue_key=issue)
-                        dependency_summary += format_as_slack_attachment(dependencies=dependencies,
-                                                                         jira_server=self.jira_server)
-                else:
+        logger.info('got request from:"{}" for "{}"'.format(event['user'], event['text']))
+        logger.debug(event)
+        try:
+            issues = self.issue_regex.findall(event['text'].upper())
+            if len(issues) >= 5:
+                logger.warning('USER:"{}" tried to get summary for {} issued'.format(event['user'],
+                                                                                     len(issues)))
+                self.slack.api_call('chat.postMessage',
+                                    channel=event['channel'],
+                                    text='Too many issues in one call! Do less than 5 :x:')
+                return
+            elif len(issues) > 0:
+                dependency_summary = []
+                for issue in issues:
+                    dependencies = self.dependency_checker.get_dependencies(issue_key=issue)
+                    dependency_summary += format_as_slack_attachment(dependencies=dependencies,
+                                                                     jira_server=self.jira_server)
+            else:
+                try:
                     revision = int(event['text'])
-                    dependencies = self.dependency_checker.get_dependencies(revision=revision)
-                    dependency_summary = format_as_slack_attachment(dependencies=dependencies,
-                                                                    jira_server=self.jira_server)
-                logger.debug(dependency_summary)
-                self.slack.api_call('chat.postMessage',
-                                    channel=event['channel'],
-                                    attachments=dependency_summary)
-                logger.info('success!')
-            except ValueError:
-                logger.warning('USER:"{}" tried to enter bad revision number'.format(event['user']))
-                self.slack.api_call('chat.postMessage',
-                                    channel=event['channel'],
-                                    text='Enter just a plain revision number! :x:')
-            except svn.exception.SvnException as e:
-                if 'No such revision' in e.args:
-                    logger.warning('svn.exception.SvnException: No such revision ({})'.format(event))
+                except ValueError:
+                    logger.warning('USER:"{}" tried to enter bad revision number'.format(event['user']))
                     self.slack.api_call('chat.postMessage',
                                         channel=event['channel'],
-                                        text='No such revision! :x:')
-                else:
-                    logger.error('USER:"{}" Unknown SvnException'.format(event['user']), exc_info=1)
-                    raise
+                                        text='Enter just a plain revision number! :x:')
+                    return
+                dependencies = self.dependency_checker.get_dependencies(revision_to_check=revision)
+
+                if dependencies['issue_key'] is None:
+                    logger.warning('USER:"{}" no issue key found for revision {}'.format(event['user'], revision))
+                    self.slack.api_call('chat.postMessage',
+                                        channel=event['channel'],
+                                        text='No issue key found for revision! :x:')
+                    return
+
+                dependency_summary = format_as_slack_attachment(dependencies=dependencies,
+                                                                jira_server=self.jira_server)
+            logger.debug(dependency_summary)
+            self.slack.api_call('chat.postMessage',
+                                channel=event['channel'],
+                                attachments=dependency_summary)
+            logger.info('success!')
+        except JIRAError as e:
+            logger.warning('USER:"{}" caused jira instance to return an error: {}'.format(event['user'], e.args))
+            if 'Issue Does Not Exist' == e.args[1]:
+                self.slack.api_call('chat.postMessage',
+                                    channel=event['channel'],
+                                    text='Issue Does Not Exist! :x:')
+            else:
+                logger.error('USER:"{}" Unknown JIRAError'.format(event['user']))
+                raise
+        except svn.exception.SvnException as e:
+            if any('No such revision' in arg for arg in e.args):
+                logger.warning('svn.exception.SvnException: No such revision ({})'.format(event))
+                self.slack.api_call('chat.postMessage',
+                                    channel=event['channel'],
+                                    text='No such revision! :x:')
+            elif any('was not found' in arg for arg in e.args):
+                logger.warning('svn.exception.SvnException: File not found ({})'.format(event))
+                self.slack.api_call('chat.postMessage',
+                                    channel=event['channel'],
+                                    text='Revision was found, but file has been moved since. '
+                                         'Could be due to checking an old revision! :x:')
+            else:
+                logger.error('USER:"{}" Unknown SvnException'.format(event['user']))
+                raise
 
 
 def main():
@@ -116,6 +140,7 @@ if __name__ == '__main__':
     try:
         main()
     except (SystemExit, KeyboardInterrupt):
+        logger.info('Goodbye :)')
         pass
     except:
         logger.critical('', exc_info=1)
