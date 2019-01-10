@@ -12,7 +12,6 @@ File = namedtuple(typename='files', field_names=['file_name', 'open_issues'])
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-
 class DependencyChecker:
     def __init__(self, jira, svn_working_copy_path, extensions_to_check, statuses_to_ignore, issue_regex,
                  dev_branch=None, max_revisions=20):
@@ -107,25 +106,26 @@ class DependencyChecker:
         logger.debug('issue_key = {}'.format(issue_key))
 
         dependencies = []
+        checked_issues = {}
+
         for file, revision_number in files:
-            revisions = self.svn.log_default(rel_filepath=file)
+            # svn.log_default is incredibly slow!
+            revisions = self.svn.log_default(rel_filepath=file, limit=self.max_checked_revisions)
 
             open_issues = set()
-            for i, revision in enumerate(revisions):
-
-                if revision.revision > revision_number:
-                    continue
-                if i > self.max_checked_revisions:
-                    break
+            for revision in (revision for revision in revisions
+                             if revision.revision < revision_number):
 
                 issues_in_revision = self.get_issue_keys(log_message=revision.msg)
                 logger.debug('{} revision({}) = {}'.format(file, revision.revision, issues_in_revision))
                 if issue_key not in issues_in_revision:
                     for issue in issues_in_revision:
-                        if issue in open_issues:
-                            continue
+                        try:
+                            issue_status = checked_issues[issue]
+                        except KeyError:
+                            issue_status = self.jira.issue(id=issue, fields='status').fields.status.name
+                            checked_issues[issue] = issue_status
 
-                        issue_status = self.jira.issue(id=issue, fields='status').fields.status.name
                         logger.debug('{} {}'.format(issue, issue_status))
 
                         if issue_status not in self.statuses_to_ignore:
@@ -136,7 +136,6 @@ class DependencyChecker:
                 'revision': revision_to_check,
                 'files': [File(file_name, open_issues)
                           for file_name, open_issues in dependencies]}
-
 
 def format_as_slack_attachment(dependencies, jira_server):
     """Formats output returned by get_dependencies in a way that we can use with Slack
