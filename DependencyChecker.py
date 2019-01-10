@@ -100,6 +100,7 @@ class DependencyChecker:
                 revision_to_check, files = self.get_modified_files_for_issue(issue_key=issue_key)
         else:
             issue_key, files = self.get_modified_files_for_revision(revision=revision_to_check)
+        # fixme: there is some weird behaviour when passing an issue_key that has no revisions
 
         logger.debug('files_found: ({}); {}'.format(len(files), files))
         logger.debug('revision_to_check: {}'.format(revision_to_check))
